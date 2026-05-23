@@ -1,0 +1,8 @@
+{
+  "serial_port": "/dev/ttyACM0",
+  "baud_rate": 9600,
+  "state_file": "/tmp/claude-lcd-sessions.json",
+  "debounce_ms": 300,
+  "observer_interval_ms": 100,
+  "idle_dim_seconds": 120
+}
