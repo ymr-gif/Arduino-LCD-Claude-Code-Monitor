@@ -1,153 +1,222 @@
-# Arduino LCD Claude Code Status Monitor
+# Arduino LCD Claude Code Monitor
 
-Passive, real-time display of Claude Code activity on a 16x2 LCD via Arduino.
-Observer-only — never modifies or controls Claude Code.
+A real-time physical status display for [Claude Code](https://claude.ai/code) — an Arduino-driven 16×2 LCD that shows what the AI is doing at a glance, without modifying or interfering with Claude Code in any way.
 
----
-
-## Concept
-
-Claude Code runs normally in a terminal.
-A separate observer process watches activity through Claude Code hooks, classifies the state, and sends it over USB serial to an Arduino, which displays it on a 16x2 LCD.
-
-The LCD acts as a physical AI activity indicator — one glance shows what Claude is doing right now.
+> Think of it as a live activity indicator light for AI computation.
 
 ---
 
-## LCD Layout
+## Preview
+
+> *(Add a photo or GIF of the LCD in action here)*
 
 ```
-Row 1: [STATUS  ] [user msg]     <- 16 chars total
-Row 2: IN:8192 OUT:4096          <- token usage
+RUNNING= Executing she   <- Row 1: state + scrolling description
+I=8k O=3k               <- Row 2: token usage (cycles with total)
 ```
 
-- Left 8 chars of row 1: current state label
-- Right 8 chars of row 1: truncated user message snippet
-- Row 2: input/output token counts for the active session
+---
+
+## Features
+
+- **Real-time status** — reflects Claude Code's current activity via its hook system
+- **15 distinct states** — from `RUNNING` to `EDITING` to `PLANNING` and more
+- **Scrolling ticker** — description text scrolls continuously across the display
+- **Token tracking** — live input/output token counts read directly from session logs
+- **Multi-session support** — automatically tracks the most recently active Claude Code instance
+- **Idle dimming** — backlight turns off after 2 minutes of inactivity, restores instantly on activity
+- **Zero intrusion** — Claude Code is completely unmodified; observation is external only
+
+---
+
+## How It Works
+
+Claude Code exposes a hook system that fires shell scripts before/after tool use. This project uses those hooks to write session state to a shared JSON file. A background observer daemon reads that file, formats a 2-line display, and sends it to the Arduino over USB serial.
+
+```
+Claude Code (unmodified)
+  └── Hook fires on every tool use
+        └── Hook script writes state → /tmp/claude-lcd-sessions.json
+              └── Observer daemon reads state (100ms poll)
+                    └── Picks most recently active session
+                          └── Formats 16×2 output
+                                └── Sends over USB serial
+                                      └── Arduino updates LCD
+```
 
 ---
 
 ## Status Types
 
-| Claude Code Tool     | LCD Label  |
-|----------------------|------------|
-| `Bash`               | `RUNNING ` |
-| `Edit`               | `EDITING ` |
-| `Write`              | `WRITING ` |
-| `Read`               | `READING ` |
-| `WebSearch`          | `WEBSRCH ` |
-| `WebFetch`           | `FETCHING` |
-| `Agent`              | `AGENT   ` |
-| `TaskCreate`         | `PLANNING` |
-| `Grep` / `Find`      | `SEARCH  ` |
-| Between tools        | `THINKING` |
-| `Stop` hook          | `IDLE    ` |
-| `UserPromptSubmit`   | `WORKING ` |
-| `Skill`              | `SKILL   ` |
-| `NotebookEdit`       | `NOTEBOOK` |
-| `ScheduleWakeup`     | `SCHEDULN` |
-| Unknown              | `......  ` |
-
----
-
-## File Structure
-
-```
-arduino-lcd-link/
-├── CLAUDE.md                    # AI instructions for this project
-├── README.md                    # this file
-├── config.json                  # serial port, baud rate settings
-├── install.sh                   # one-time setup (hooks + daemon)
-│
-├── hooks/                       # scripts fired by Claude Code automatically
-│   ├── pre_tool.py              # captures tool name → infers state
-│   ├── post_tool.py             # captures token counts after tool use
-│   ├── on_stop.py               # fires when Claude goes idle
-│   └── on_prompt.py             # captures user message snippet
-│
-├── observer/                    # main observer daemon
-│   ├── main.py                  # entry point, runs as background daemon
-│   ├── session_manager.py       # tracks all sessions, picks most recently active
-│   ├── state_classifier.py      # maps tool name → status label string
-│   ├── lcd_formatter.py         # formats 2-line 16x2 output with debounce
-│   └── serial_bridge.py         # sends formatted lines to Arduino via pyserial
-│
-└── arduino/
-    └── lcd_status/
-        └── lcd_status.ino       # Arduino firmware, reads serial, drives LCD
-```
-
----
-
-## Data Flow
-
-```
-User types in Claude Code terminal
-  └── Claude Code hook fires (pre_tool / post_tool / stop / prompt)
-        └── hook script writes to /tmp/claude-lcd-sessions.json
-              └── observer daemon reads file
-                    └── session_manager picks most recently active session
-                          └── state_classifier maps tool → label
-                                └── lcd_formatter builds 2 lines (with debounce)
-                                      └── serial_bridge sends over USB serial
-                                            └── Arduino updates 16x2 LCD
-```
-
----
-
-## Session Tracking
-
-Each hook writes a JSON entry:
-```json
-{
-  "session_id": "abc123",
-  "timestamp": 1748000000.000,
-  "state": "EDITING ",
-  "user_msg": "fix the bug",
-  "tokens_in": 8192,
-  "tokens_out": 4096
-}
-```
-
-- All sessions tracked in `/tmp/claude-lcd-sessions.json`
-- If multiple Claude Code instances are running, the one with the latest `timestamp` wins
-- No configuration needed — most recently interacted session is always shown
-
----
-
-## Key Design Decisions
-
-- **Hook-based**: Claude Code fires hooks on every tool use. No polling, no scraping.
-- **Token source**: `PostToolUse` hook receives usage data via stdin JSON — no external API needed.
-- **Debounce**: 300ms debounce in `lcd_formatter.py` prevents LCD flicker on rapid state changes.
-- **Daemon**: Observer runs in background. Start via `install.sh` which adds it to shell startup.
-- **Serial protocol**: Arduino receives newline-delimited commands — `L1:THINKING askme..\nL2:IN:8192 OUT:4096\n`
-- **Graceful fallback**: If Arduino disconnects, observer continues silently without crashing.
-
----
-
-## Setup (planned)
-
-1. Run `install.sh` — configures Claude Code hooks in `~/.claude/settings.json` and registers daemon in shell startup
-2. Edit `config.json` — set correct serial port (`/dev/ttyUSB0` or `/dev/ttyACM0`) and baud rate
-3. Flash `arduino/lcd_status/lcd_status.ino` via Arduino IDE
-4. Open any terminal and run `claude` — LCD activates automatically
+| LCD Label  | Trigger                        | Description               |
+|------------|--------------------------------|---------------------------|
+| `IDLE`     | Claude finishes responding     | Waiting for input         |
+| `WORKING`  | User submits a message         | Processing message        |
+| `THINKIN`  | Between tool calls             | Thinking it through       |
+| `RUNNING`  | `Bash` tool                    | Executing shell command   |
+| `EDITING`  | `Edit` tool                    | Modifying existing file   |
+| `WRITING`  | `Write` tool                   | Creating new file         |
+| `READING`  | `Read` tool                    | Reading file contents     |
+| `WEBSRCH`  | `WebSearch` tool               | Searching the web         |
+| `FETCH`    | `WebFetch` tool                | Fetching web content      |
+| `AGENT`    | `Agent` tool                   | Delegating to subagent    |
+| `PLANNIN`  | `Task*` tools                  | Planning task structure   |
+| `SEARCH`   | `Grep` / `Explore` tool        | Searching codebase        |
+| `SKILL`    | `Skill` tool                   | Running skill module      |
+| `NOTEBK`   | `NotebookEdit` tool            | Editing notebook cells    |
+| `SCHEDUL`  | `ScheduleWakeup` tool          | Scheduling a task         |
 
 ---
 
 ## Hardware
 
-- Arduino (Uno or compatible)
-- 16x2 LCD (HD44780-compatible)
-- USB cable (for serial + power)
-- Optional: I2C LCD module to reduce wiring
+| Component | Details |
+|---|---|
+| Arduino Uno | Or any compatible board |
+| 16×2 LCD with I2C backpack | HD44780-compatible, PCF8574 I2C module |
+| USB cable | For serial communication + power |
+
+### Wiring (I2C — only 4 wires)
+
+| LCD Pin | Arduino Pin |
+|---|---|
+| `VCC` | `5V` |
+| `GND` | `GND` |
+| `SDA` | `A4` |
+| `SCL` | `A5` |
 
 ---
 
-## Constraints
+## Installation
 
-- Claude Code must remain unmodified
-- No internal API access or reasoning introspection
-- External observation only via official hook system
-- Must handle unknown/ambiguous states gracefully
-- Display must remain stable and readable — not a log feed
+### 1. Clone the repo
+
+```bash
+git clone <repo-url>
+cd arduino-lcd-link
+```
+
+### 2. Flash the Arduino
+
+1. Open `arduino/lcd_status/lcd_status.ino` in Arduino IDE
+2. Install the **LiquidCrystal I2C** library (by Frank de Brabander) via Library Manager
+3. Select **Tools → Board → Arduino Uno** and the correct port
+4. Click **Upload**
+
+> If the display stays blank after flashing, open the `.ino` file and change `0x27` to `0x3F` on line 5, then re-upload.
+
+### 3. Configure
+
+Find your Arduino's serial port:
+```bash
+ls /dev/tty{USB,ACM}*
+```
+
+Edit `config.json`:
+```json
+{
+  "serial_port": "/dev/ttyACM0",
+  "baud_rate": 9600,
+  "debounce_ms": 300,
+  "observer_interval_ms": 100,
+  "idle_dim_seconds": 120
+}
+```
+
+### 4. Run the installer
+
+```bash
+chmod +x install.sh && ./install.sh
+```
+
+This will:
+- Register Claude Code hooks in `~/.claude/settings.json`
+- Install `python3-serial` via apt
+- Add the observer daemon to your shell startup (`~/.bashrc` / `~/.zshrc`)
+- Add your user to the `dialout` group for serial port access
+
+> **Note:** Run `newgrp dialout` or open a new terminal after install for group changes to apply.
+
+### 5. Start using it
+
+Open a new terminal (so the observer daemon starts), then:
+
+```bash
+claude
+```
+
+The LCD activates the moment Claude Code uses its first tool.
+
+---
+
+## Display Layout
+
+**Row 1** — State + scrolling description (16 chars total):
+```
+EDITING= Modifying ex   (scrolls left continuously)
+```
+
+**Row 2** — Token usage, cycles every 5 seconds:
+```
+I=8k O=3k               (input / output tokens)
+T=11k                   (total tokens)
+```
+
+Token counts reflect `input_tokens + cache_creation_input_tokens` and `output_tokens` per session, read directly from Claude Code's session logs. Resets with each new `claude` invocation.
+
+---
+
+## Project Structure
+
+```
+arduino-lcd-link/
+├── config.json                  # Serial port, timing, and behavior settings
+├── install.sh                   # One-command setup script
+│
+├── hooks/                       # Scripts fired automatically by Claude Code
+│   ├── state_utils.py           # Shared file I/O with locking
+│   ├── pre_tool.py              # Fires before each tool → sets state
+│   ├── post_tool.py             # Fires after each tool → captures tokens
+│   ├── on_stop.py               # Fires when Claude stops → sets IDLE
+│   └── on_prompt.py             # Fires on user message → sets WORKING
+│
+├── observer/                    # Background daemon
+│   ├── main.py                  # Entry point and main loop
+│   ├── session_manager.py       # Picks most recently active session
+│   ├── state_classifier.py      # Maps tool names to state labels
+│   ├── lcd_formatter.py         # Formats 16×2 output with scroll and cycling
+│   ├── serial_bridge.py         # Sends data to Arduino via pyserial
+│   └── token_reader.py          # Reads token counts from Claude Code JSONL logs
+│
+└── arduino/
+    └── lcd_status/
+        └── lcd_status.ino       # Arduino firmware (I2C LCD + serial protocol)
+```
+
+---
+
+## Serial Protocol
+
+The observer sends newline-delimited commands to the Arduino:
+
+| Command | Effect |
+|---|---|
+| `L1:<text>` | Update row 1 |
+| `L2:<text>` | Update row 2 (triggers LCD refresh) |
+| `BL:1` | Backlight fully on |
+| `BL:0` | Backlight off |
+
+---
+
+## Requirements
+
+- Python 3.10+
+- `python3-serial` (`sudo apt install python3-serial`)
+- Claude Code CLI
+- Arduino IDE (for firmware upload)
+
+---
+
+## License
+
+MIT
